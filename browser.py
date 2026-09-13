@@ -12,8 +12,15 @@
 import os
 import queue
 import re
+import sys
 import threading
 import time
+
+# Официальная схема упаковки Playwright кладёт браузер внутрь пакета с
+# PLAYWRIGHT_BROWSERS_PATH=0. В portable exe эту настройку надо повторить до
+# первого импорта Playwright, иначе он начнёт искать Chromium в AppData.
+if getattr(sys, "frozen", False):
+    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")
 
 # Какой браузер запускать: "auto", "chrome", "msedge" или "chromium".
 # "auto" берёт первый установленный в этом порядке.

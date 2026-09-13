@@ -1,5 +1,5 @@
-yt-dlp
-sounddevice
-numpy
-imageio-ffmpeg
-playwright
+yt-dlp==2026.8.19
+sounddevice==0.5.5
+numpy==2.5.1
+imageio-ffmpeg==0.6.0
+playwright==1.62.0

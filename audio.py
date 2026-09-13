@@ -38,7 +38,12 @@ MIN_OK_BYTES = BLOCK_FRAMES * CHANNELS * 4 * 46
 MAX_ATTEMPTS = 3
 RETRY_DELAY = 2.0
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
+# В обычном запуске рабочие файлы лежат рядом с исходниками. В сборке
+# PyInstaller __file__ указывает внутрь служебной папки, поэтому используем
+# папку самого exe: portable-архив можно переносить вместе с его историей.
+_HERE = (os.path.dirname(os.path.abspath(sys.executable))
+         if getattr(sys, "frozen", False)
+         else os.path.dirname(os.path.abspath(__file__)))
 JOURNAL_PATH = os.path.join(_HERE, "history.log")
 MARKS_PATH = os.path.join(_HERE, "positions.json")
 

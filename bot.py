@@ -10,6 +10,8 @@
 Полный список — команда help.
 """
 
+import os
+import sys
 import time
 
 from audio import (JOURNAL_PATH, Player, Track, find_cable_device, find_ffmpeg,
@@ -18,11 +20,117 @@ from browser import TelemostBrowser
 
 BOT_NAME = "Music Bot"
 
+
+def configure_console():
+    """UTF-8 для прямого запуска Python и portable exe на Windows."""
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+            ctypes.windll.kernel32.SetConsoleCP(65001)
+        except Exception:
+            pass
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError):
+            pass
+
+
+def self_test():
+    """Быстрая офлайн-проверка компонентов обычного и portable-запуска."""
+    checks = []
+
+    ffmpeg = find_ffmpeg()
+    checks.append(("ffmpeg", bool(ffmpeg), ffmpeg or "не найден"))
+
+    try:
+        from yt_dlp.version import __version__ as ytdlp_version
+
+        checks.append(("yt-dlp", True, ytdlp_version))
+    except Exception as exc:  # noqa: BLE001
+        checks.append(("yt-dlp", False, str(exc)))
+
+    try:
+        import glob
+        import playwright
+
+        package_root = os.path.dirname(os.path.abspath(playwright.__file__))
+        roots = [os.path.join(package_root, "driver", "package", ".local-browsers")]
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            roots.append(os.path.join(local, "ms-playwright"))
+        candidates = []
+        for root in roots:
+            candidates.extend(glob.glob(os.path.join(
+                root, "chromium-*", "chrome-win64", "chrome.exe")))
+        browser_path = candidates[0] if candidates else "не найден"
+        checks.append(("Chromium", bool(candidates), browser_path))
+    except Exception as exc:  # noqa: BLE001
+        checks.append(("Chromium", False, str(exc)))
+
+    try:
+        outputs = list_output_devices()
+        cable = find_cable_device()
+        checks.append(("VB-Cable", cable is not None,
+                       f"устройство №{cable}" if cable is not None
+                       else f"не найден среди {len(outputs)} выходов"))
+    except Exception as exc:  # noqa: BLE001
+        checks.append(("VB-Cable", False, str(exc)))
+
+    print("\n  Самопроверка приложения:\n")
+    for name, good, detail in checks:
+        print(f"   {'[ок]' if good else '[!!]'} {name}: {detail}")
+    print()
+    return all(good for _, good, _ in checks)
+
 BANNER = r"""
   ┌──────────────────────────────────────────────┐
   │   Телемост Music Bot                         │
   │   help — список команд, quit — выход         │
   └──────────────────────────────────────────────┘
+"""
+
+QUICK_START = """
+  Быстрый старт:
+    1. join <ссылка Телемоста>  — подключить бота к звонку
+    2. play <ссылка или название> — включить музыку
+    3. pause / next / stop      — управлять воспроизведением
+
+  guide — пошаговая инструкция для первого запуска
+  help  — краткий справочник всех команд
+"""
+
+GUIDE = """
+  ПЕРВЫЙ ЗАПУСК
+
+  1. Установи VB-Audio Virtual Cable и перезагрузи Windows.
+     В системе должны появиться CABLE Input и CABLE Output.
+
+  2. Подключи бота к встрече:
+       join https://telemost.yandex.ru/j/...
+
+     Откроется отдельное окно браузера. Если бот не вошёл сам, нажми
+     «Присоединиться» вручную. Его микрофоном должен быть CABLE Output.
+
+  3. Включи музыку:
+       play название песни
+       play https://www.youtube.com/watch?v=...
+       play https://youtu.be/... @40:00
+
+  4. Основное управление:
+       pause       пауза / продолжить
+       next        следующий трек
+       stop        остановить и очистить очередь
+       vol 70      громкость 70%
+       list        показать очередь
+
+  5. Если звука нет:
+       test        проверить локальный аудиотракт
+       diag        запустить полную диагностику
+
+  Подробная инструкция лежит в README.md рядом с приложением.
 """
 
 HELP = """
@@ -46,6 +154,9 @@ HELP = """
   stats               что бот реально отдаёт в звонок: битрейт, кодек, потери
   dev                 список устройств вывода
   dev <номер>         вручную выбрать устройство вывода
+  guide               пошаговая инструкция для первого запуска
+  diag                полная диагностика Windows, кабеля и браузера
+  selftest            быстрая офлайн-проверка portable-компонентов
   quit                выход
 """
 
@@ -271,6 +382,8 @@ def main():
     if prio:
         log(f"Приоритет процесса: {prio} — меньше щелчков во время игры")
 
+    print(QUICK_START)
+
     player = Player(device, log=log)
     player.start()
     browser = None
@@ -293,6 +406,22 @@ def main():
 
         elif cmd in ("help", "h", "?"):
             print(HELP)
+
+        elif cmd in ("guide", "start", "начало", "инструкция"):
+            print(GUIDE)
+
+        elif cmd in ("diag", "doctor", "диагностика"):
+            log("запускаю полную диагностику...")
+            try:
+                import diag as diagnosis
+
+                diagnosis.problems.clear()
+                diagnosis.main()
+            except Exception as exc:  # noqa: BLE001
+                log(f"[ошибка диагностики] {exc}")
+
+        elif cmd in ("selftest", "check", "проверка"):
+            self_test()
 
         elif cmd == "join":
             if not arg:
@@ -491,6 +620,15 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        configure_console()
+        mode = sys.argv[1].lower() if len(sys.argv) > 1 else ""
+        if mode in ("--self-test", "--selftest"):
+            raise SystemExit(0 if self_test() else 1)
+        if mode in ("--diag", "diag", "doctor"):
+            import diag as diagnosis
+
+            diagnosis.main()
+        else:
+            main()
     except KeyboardInterrupt:
         pass

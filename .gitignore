@@ -19,3 +19,8 @@ positions.json
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Результаты portable-сборки
+build/
+dist/
+*.zip
