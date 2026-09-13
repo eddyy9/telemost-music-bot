@@ -38,6 +38,7 @@ PROFILE_DIR = os.path.join(_BASE, "telemost-music-bot", "chrome-profile")
 TELEMOST_ORIGIN = "https://telemost.yandex.ru"
 
 CHROMIUM_ARGS = [
+    "--start-maximized",                       # использовать весь доступный экран
     "--use-fake-ui-for-media-stream",       # молча соглашаться на микрофон
     "--autoplay-policy=no-user-gesture-required",
     "--disable-blink-features=AutomationControlled",
@@ -47,8 +48,10 @@ CHROMIUM_ARGS = [
 # пробуем набор победнее — лучше браузер без украшений, чем никакого.
 ARG_SETS = [
     CHROMIUM_ARGS,
-    ["--use-fake-ui-for-media-stream", "--autoplay-policy=no-user-gesture-required"],
-    ["--use-fake-ui-for-media-stream"],
+    ["--start-maximized", "--use-fake-ui-for-media-stream",
+     "--autoplay-policy=no-user-gesture-required"],
+    ["--start-maximized", "--use-fake-ui-for-media-stream"],
+    ["--start-maximized"],
     [],
 ]
 
@@ -600,7 +603,10 @@ class TelemostBrowser(threading.Thread):
                             headless=False,
                             args=args,
                             permissions=["microphone"],
-                            viewport={"width": 1100, "height": 780},
+                            # Фиксированный viewport обрезал Телемост и Музыку
+                            # даже в развёрнутом окне. Пусть размер страницы
+                            # всегда следует за реальным размером окна.
+                            no_viewport=True,
                             timeout=90000,
                         )
                         if channel:
