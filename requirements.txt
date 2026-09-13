@@ -1,0 +1,5 @@
+yt-dlp
+sounddevice
+numpy
+imageio-ffmpeg
+playwright

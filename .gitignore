@@ -1,0 +1,21 @@
+# Виртуальное окружение
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Профили браузера бота (тысячи мелких файлов)
+.chrome-profile/
+.chrome-profile-diag/
+
+# Рабочие данные бота
+history.log
+positions.json
+
+# Системное
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
