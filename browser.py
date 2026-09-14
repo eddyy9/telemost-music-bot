@@ -59,6 +59,16 @@ def _profile_dir(channel):
 
 TELEMOST_ORIGIN = "https://telemost.yandex.ru"
 
+# На Windows Телемост теперь сначала пытается открыть desktop-приложение и
+# показывает промежуточную кнопку «Продолжить в браузере». Автоматический клик
+# Playwright Яндекс игнорирует из-за проверки user gesture. Подменяем ОС только
+# в HTTP-запросе главного документа Телемоста: сервер сразу отдаёт обычный
+# web-flow. Сам браузер, WebRTC и вкладка Музыки при этом остаются Windows.
+TELEMOST_WEB_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
+)
+
 CHROMIUM_ARGS = [
     "--start-maximized",                       # использовать весь доступный экран
     "--use-fake-ui-for-media-stream",       # молча соглашаться на микрофон
@@ -695,7 +705,8 @@ class TelemostBrowser(threading.Thread):
 
                 ctx.add_init_script(INIT_SCRIPT)
                 self._ctx = ctx
-                page.goto(self.meet_url, wait_until="domcontentloaded", timeout=60000)
+                page.route(f"{TELEMOST_ORIGIN}/**", self._route_telemost_web)
+                self._open_telemost(page)
                 self._try_join(page)
                 self._report_mic(page)
                 self.ready.set()
@@ -720,6 +731,58 @@ class TelemostBrowser(threading.Thread):
                 self.log("[браузер] закрыт")
 
     # ---------- best-effort автоклик ----------
+
+    def _route_telemost_web(self, route, request):
+        """Не даём Windows-странице уводить вход в desktop-приложение."""
+        headers = dict(request.headers)
+        if request.is_navigation_request() and request.resource_type == "document":
+            headers["user-agent"] = TELEMOST_WEB_UA
+        route.continue_(headers=headers)
+
+    def _open_telemost(self, page):
+        """Открыть Телемост и восстановиться после тайм-аута его CDN."""
+        last_error = None
+        for attempt in range(1, 4):
+            if attempt > 1:
+                self.log(f"[браузер] Телемост не загрузился, повтор {attempt}/3...")
+                try:
+                    page.goto("about:blank", wait_until="commit", timeout=5000)
+                except Exception:
+                    pass
+
+            try:
+                page.goto(
+                    self.meet_url,
+                    wait_until="domcontentloaded",
+                    timeout=60000,
+                )
+                last_error = None
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+
+            # При сбое telemost.yastatic.net основной HTML остаётся на экране
+            # с вечной «Загрузкой приложения». Проверяем именно элементы
+            # Телемоста, а не любую кнопку: у системной страницы ошибки Chrome
+            # тоже есть кнопка «Обновить».
+            try:
+                page.wait_for_function(
+                    """() => {
+                        const text = document.body ? document.body.innerText : '';
+                        return /Продолжить в браузере|Присоединиться|Подключиться|Выйти|Покинуть|Join|Continue|Leave/i.test(text);
+                    }""",
+                    timeout=12000,
+                )
+                return
+            except Exception:
+                continue
+
+        detail = ""
+        if last_error:
+            detail = ": " + str(last_error).strip().splitlines()[0][:180]
+        raise RuntimeError(
+            "Телемост не загрузил интерфейс после трёх попыток"
+            f"{detail}. Проверь интернет и повтори join."
+        )
 
     def _try_join(self, page):
         page.wait_for_timeout(3500)
