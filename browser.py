@@ -42,6 +42,21 @@ PTIME_MS = 20
 _BASE = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or os.path.expanduser("~")
 PROFILE_DIR = os.path.join(_BASE, "telemost-music-bot", "chrome-profile")
 
+
+def _profile_dir(channel):
+    """Не смешиваем профили разных Chromium-сборок.
+
+    Старый профиль исторически принадлежит Edge, поэтому оставляем его на
+    прежнем месте: пользователь не потеряет вход в Яндекс. Встроенный Chromium
+    и возможный Google Chrome получают собственные профили. Иначе более новый
+    Edge может обновить формат профиля, после чего встроенный Chromium закроется
+    сразу при запуске как при попытке открыть профиль от более новой версии.
+    """
+    if channel == "msedge":
+        return PROFILE_DIR
+    suffix = channel or "chromium"
+    return f"{PROFILE_DIR}-{suffix}"
+
 TELEMOST_ORIGIN = "https://telemost.yandex.ru"
 
 CHROMIUM_ARGS = [
@@ -466,6 +481,11 @@ MIC_ON = [r"Включить микрофон", r"Включить микро", 
 
 def _channels():
     if BROWSER == "auto":
+        # В portable-сборку Chromium положен специально для бота. Он не зависит
+        # от установленных браузеров и их обновлений, поэтому там пробуем его
+        # первым. При запуске из исходников сохраняем прежний порядок.
+        if getattr(sys, "frozen", False):
+            return (None, "chrome", "msedge")
         return ("chrome", "msedge", None)
     if BROWSER == "chromium":
         return (None,)
@@ -600,13 +620,15 @@ class TelemostBrowser(threading.Thread):
 
         with sync_playwright() as p:
             ctx = None
+            page = None
             last_error = None
             for channel in _channels():
                 label = channel or "chromium (встроенный)"
                 for args in ARG_SETS:
+                    candidate = None
                     try:
                         kwargs = dict(
-                            user_data_dir=PROFILE_DIR,
+                            user_data_dir=_profile_dir(channel),
                             headless=False,
                             args=args,
                             permissions=["microphone"],
@@ -618,10 +640,31 @@ class TelemostBrowser(threading.Thread):
                         )
                         if channel:
                             kwargs["channel"] = channel
-                        ctx = p.chromium.launch_persistent_context(**kwargs)
+                        candidate = p.chromium.launch_persistent_context(**kwargs)
+
+                        # Некоторые версии Edge сначала возвращают контекст, а
+                        # затем тут же закрывают процесс (например, после
+                        # обновления браузера или сбоя профиля). Раньше такой
+                        # контекст считался успешным, и до встроенного Chromium
+                        # бот уже не доходил. Проверяем, что страница реально
+                        # отвечает, и только тогда принимаем браузер.
+                        candidate_page = (
+                            candidate.pages[0] if candidate.pages
+                            else candidate.new_page()
+                        )
+                        candidate_page.wait_for_timeout(350)
+                        candidate_page.evaluate("1")
+
+                        ctx = candidate
+                        page = candidate_page
                         break
                     except Exception as exc:  # noqa: BLE001
                         last_error = exc
+                        if candidate is not None:
+                            try:
+                                candidate.close()
+                            except Exception:
+                                pass
 
                 if ctx is not None:
                     if args is CHROMIUM_ARGS:
@@ -652,7 +695,6 @@ class TelemostBrowser(threading.Thread):
 
                 ctx.add_init_script(INIT_SCRIPT)
                 self._ctx = ctx
-                page = ctx.pages[0] if ctx.pages else ctx.new_page()
                 page.goto(self.meet_url, wait_until="domcontentloaded", timeout=60000)
                 self._try_join(page)
                 self._report_mic(page)

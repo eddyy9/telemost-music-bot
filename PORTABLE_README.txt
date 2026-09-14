@@ -43,7 +43,10 @@ VB-Audio Virtual Cable — это системный аудиодрайвер Wi
 Музыка отправляется в CABLE Input.
 
 История воспроизведения и сохранённые позиции создаются рядом с exe.
-Профиль браузера хранится в:
+Профиль встроенного браузера хранится в:
+  %LOCALAPPDATA%\telemost-music-bot\chrome-profile-chromium
+
+Если бот вынужденно использует Microsoft Edge, его профиль хранится отдельно:
   %LOCALAPPDATA%\telemost-music-bot\chrome-profile
 
 Подробное описание всех возможностей находится в README.md.
