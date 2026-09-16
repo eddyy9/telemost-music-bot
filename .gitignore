@@ -24,3 +24,9 @@ Thumbs.db
 build/
 dist/
 *.zip
+
+# Артефакты и скрипты portable-сборки (не выкладываются)
+PORTABLE_README.txt
+TelemostMusicBot.spec
+build_portable.bat
+requirements-build.txt
