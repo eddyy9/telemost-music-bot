@@ -7,42 +7,20 @@ import sys
 import threading
 import time
 
-# Официальная схема упаковки Playwright кладёт браузер внутрь пакета с
-# PLAYWRIGHT_BROWSERS_PATH=0. В portable exe эту настройку надо повторить до
-# первого импорта Playwright, иначе он начнёт искать Chromium в AppData.
 if getattr(sys, "frozen", False):
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")
 
-# Какой браузер запускать: "auto", "chrome", "msedge" или "chromium".
-# "auto" берёт первый установленный в этом порядке.
 BROWSER = "auto"
 
-# Целевой битрейт Opus, кбит/с. По RFC 7587 полнополосной стереомузыке нужно
-# 64-128; ниже 48 начинается «радио». Выше 160 смысла почти нет — упрёшься
-# в пережатие на стороне Телемоста. Если у слушателей полезут потери пакетов
-# (видно в команде stats), опусти до 96 или 64.
 TARGET_KBPS = 128
 
-# Длительность одного пакета, мс. Chrome и так шлёт по 20, но лучше не
-# зависеть от умолчаний. Можно поставить 40: заголовков RTP/UDP/IP вдвое
-# меньше, зато каждый потерянный пакет уносит вдвое больше звука.
 PTIME_MS = 20
 
-# Профиль браузера держим ВНЕ папки бота: она лежит в OneDrive, а профиль
-# Chromium — это тысячи мелких файлов, синхронизация их портит и подвешивает.
 _BASE = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or os.path.expanduser("~")
 PROFILE_DIR = os.path.join(_BASE, "telemost-music-bot", "chrome-profile")
 
 
 def _profile_dir(channel):
-    """Не смешиваем профили разных Chromium-сборок.
-
-    Старый профиль исторически принадлежит Edge, поэтому оставляем его на
-    прежнем месте: пользователь не потеряет вход в Яндекс. Встроенный Chromium
-    и возможный Google Chrome получают собственные профили. Иначе более новый
-    Edge может обновить формат профиля, после чего встроенный Chromium закроется
-    сразу при запуске как при попытке открыть профиль от более новой версии.
-    """
     if channel == "msedge":
         return PROFILE_DIR
     suffix = channel or "chromium"
@@ -50,11 +28,6 @@ def _profile_dir(channel):
 
 TELEMOST_ORIGIN = "https://telemost.yandex.ru"
 
-# На Windows Телемост теперь сначала пытается открыть desktop-приложение и
-# показывает промежуточную кнопку «Продолжить в браузере». Автоматический клик
-# Playwright Яндекс игнорирует из-за проверки user gesture. Подменяем ОС только
-# в HTTP-запросе главного документа Телемоста: сервер сразу отдаёт обычный
-# web-flow. Сам браузер, WebRTC и вкладка Музыки при этом остаются Windows.
 TELEMOST_WEB_UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
@@ -67,8 +40,6 @@ CHROMIUM_ARGS = [
     "--disable-blink-features=AutomationControlled",
 ]
 
-# Отдельные сборки браузеров падают на некоторых флагах. Если запуск не удался,
-# пробуем набор победнее — лучше браузер без украшений, чем никакого.
 ARG_SETS = [
     CHROMIUM_ARGS,
     ["--start-maximized", "--use-fake-ui-for-media-stream",
@@ -127,8 +98,6 @@ INIT_SCRIPT = r"""
     const a = fixAudio(c.audio);
     const id = await findCable();
 
-    // От самого желаемого к самому терпимому: лучше отдать хоть какой-то
-    // микрофон, чем уронить Телемост исключением.
     const attempts = [];
     if (id) {
       attempts.push(Object.assign({}, c, { audio: Object.assign({}, a, { deviceId: { exact: id } }) }));
@@ -157,7 +126,6 @@ INIT_SCRIPT = r"""
     throw lastErr;
   };
 
-  // Телемост может позже переприменить constraints и вернуть шумодав — не даём.
   if (window.MediaStreamTrack && MediaStreamTrack.prototype.applyConstraints) {
     const origApply = MediaStreamTrack.prototype.applyConstraints;
     MediaStreamTrack.prototype.applyConstraints = function (c) {
@@ -183,10 +151,6 @@ INIT_SCRIPT = r"""
   window.RTCPeerConnection = Patched;
   if (window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = Patched;
 
-  // --- разгон кодека ---
-  // По RFC 7587 maxaveragebitrate — параметр ПРИЁМНИКА: он сообщает
-  // отправителю, сколько тому разрешено слать. Поэтому чтобы разогнать
-  // НАШ кодировщик, значение должно оказаться во ВХОДЯЩЕМ описании.
   const OPUS = {
     'stereo': '1',                 // разрешаем принимать стерео
     'sprop-stereo': '1',           // и сообщаем, что сами шлём стерео
@@ -253,7 +217,6 @@ INIT_SCRIPT = r"""
       out.push(l);
     }
 
-    // если строки fmtp не было вовсе — дописываем её сразу после rtpmap
     const res = [];
     inAudio = false;
     for (const l of out) {
@@ -298,8 +261,6 @@ INIT_SCRIPT = r"""
     };
   });
 
-  // Второй рычаг помимо SDP: явный потолок битрейта у отправителя.
-  // Дорожки появляются не сразу, поэтому проверяем периодически.
   const tuneSenders = () => {
     (window.__botPCs || []).forEach((pc) => {
       let senders;
@@ -319,7 +280,6 @@ INIT_SCRIPT = r"""
   };
   setInterval(tuneSenders, 2000);
 
-  // Один срез статистики. Скорость считается снаружи по двум срезам.
   window.__botCollect = async () => {
     const res = { ts: Date.now(), bytes: 0, packets: 0, pcs: 0,
                   codec: null, target: null, source: null, remote: null };
@@ -356,10 +316,6 @@ INIT_SCRIPT = (INIT_SCRIPT
                .replace("__TARGET_BPS__", str(int(TARGET_KBPS * 1000)))
                .replace("__PTIME_MS__", str(int(PTIME_MS))))
 
-# --- маршрутизация звука страницы в виртуальный кабель ---
-# Обычно вывод приложения переключают в микшере Windows, и потом эту настройку
-# приходится возвращать руками. Здесь то же самое делается изнутри страницы:
-# закрыл окно — всё вернулось, потому что систему никто не трогал.
 SINK_SCRIPT = r"""
 (() => {
   const CABLE = /CABLE Input|VB-Audio|VB-Cable/i;
@@ -482,9 +438,6 @@ MIC_ON = [r"Включить микрофон", r"Включить микро", 
 
 def _channels():
     if BROWSER == "auto":
-        # В portable-сборку Chromium положен специально для бота. Он не зависит
-        # от установленных браузеров и их обновлений, поэтому там пробуем его
-        # первым. При запуске из исходников сохраняем прежний порядок.
         if getattr(sys, "frozen", False):
             return (None, "chrome", "msedge")
         return ("chrome", "msedge", None)
@@ -501,13 +454,9 @@ class TelemostBrowser(threading.Thread):
         self.meet_url = meet_url
         self.bot_name = bot_name
         self.log = log
-        # ВНИМАНИЕ: имя _stop занято внутренним методом threading.Thread —
-        # если его перекрыть, ломается join(). Отсюда суффикс.
         self._stop_evt = threading.Event()
         self.ready = threading.Event()
         self.error = None
-        # Playwright sync-API требует вызовов из своего потока, поэтому
-        # остальные потоки шлют сюда задания и ждут ответа.
         self._jobs = queue.Queue()
         self._ctx = None
         self._music_page = None
@@ -633,9 +582,6 @@ class TelemostBrowser(threading.Thread):
                             headless=False,
                             args=args,
                             permissions=["microphone"],
-                            # Фиксированный viewport обрезал Телемост и Музыку
-                            # даже в развёрнутом окне. Пусть размер страницы
-                            # всегда следует за реальным размером окна.
                             no_viewport=True,
                             timeout=90000,
                         )
@@ -643,12 +589,6 @@ class TelemostBrowser(threading.Thread):
                             kwargs["channel"] = channel
                         candidate = p.chromium.launch_persistent_context(**kwargs)
 
-                        # Некоторые версии Edge сначала возвращают контекст, а
-                        # затем тут же закрывают процесс (например, после
-                        # обновления браузера или сбоя профиля). Раньше такой
-                        # контекст считался успешным, и до встроенного Chromium
-                        # бот уже не доходил. Проверяем, что страница реально
-                        # отвечает, и только тогда принимаем браузер.
                         candidate_page = (
                             candidate.pages[0] if candidate.pages
                             else candidate.new_page()
@@ -688,7 +628,6 @@ class TelemostBrowser(threading.Thread):
                 return
 
             try:
-                # Разрешение на микрофон — заранее и явно для домена Телемоста.
                 try:
                     ctx.grant_permissions(["microphone"], origin=TELEMOST_ORIGIN)
                 except Exception as exc:  # noqa: BLE001
@@ -751,10 +690,6 @@ class TelemostBrowser(threading.Thread):
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
 
-            # При сбое telemost.yastatic.net основной HTML остаётся на экране
-            # с вечной «Загрузкой приложения». Проверяем именно элементы
-            # Телемоста, а не любую кнопку: у системной страницы ошибки Chrome
-            # тоже есть кнопка «Обновить».
             try:
                 page.wait_for_function(
                     """() => {
