@@ -8,14 +8,22 @@ import threading
 import time
 
 if getattr(sys, "frozen", False):
+    # Выставляется до первого импорта Playwright, иначе он ищет Chromium в AppData.
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")
 
+# "auto" | "chrome" | "msedge" | "chromium"; auto берёт первый установленный в этом порядке.
 BROWSER = "auto"
 
+# Opus, кбит/с. RFC 7587 на полнополосное стерео даёт 64-128; ниже 48 начинается
+# «радио», выше 160 упирается в пережатие на стороне Телемоста.
 TARGET_KBPS = 128
 
+# Длительность RTP-пакета, мс. 40 вдвое экономит заголовки, но вдвое увеличивает
+# потерю звука на каждый пропавший пакет.
 PTIME_MS = 20
 
+# Профиль Chromium — тысячи мелких файлов; в синхронизируемой папке (OneDrive)
+# он портится, поэтому живёт вне папки бота.
 _BASE = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or os.path.expanduser("~")
 PROFILE_DIR = os.path.join(_BASE, "telemost-music-bot", "chrome-profile")
 
@@ -26,8 +34,17 @@ def _profile_dir(channel):
     suffix = channel or "chromium"
     return f"{PROFILE_DIR}-{suffix}"
 
+
+def _music_profile_dir(channel):
+    """Отдельный профиль под Музыку: из общего Телемост пустит бота под именем владельца аккаунта."""
+    return _profile_dir(channel) + "-music"
+
+
 TELEMOST_ORIGIN = "https://telemost.yandex.ru"
 
+# Телемост на Windows уводит вход в desktop-приложение, а автоклик по кнопке
+# «Продолжить в браузере» не проходит проверку user gesture. ОС подменяется только
+# в HTTP-запросе главного документа: браузер, WebRTC и вкладка Музыки остаются Windows.
 TELEMOST_WEB_UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
@@ -235,6 +252,8 @@ INIT_SCRIPT = r"""
   };
   window.__botTuneSdp = tuneSdp;
 
+  // RFC 7587: maxaveragebitrate — параметр приёмника, он ограничивает отправителя.
+  // Поэтому свой кодировщик разгоняется правкой ВХОДЯЩЕГО описания, а не исходящего.
   const proto = Orig.prototype;
   ['setLocalDescription', 'setRemoteDescription'].forEach((name) => {
     const orig = proto[name];
@@ -454,12 +473,17 @@ class TelemostBrowser(threading.Thread):
         self.meet_url = meet_url
         self.bot_name = bot_name
         self.log = log
+        # Имя _stop занято внутренним методом threading.Thread: перекрытие ломает join().
         self._stop_evt = threading.Event()
         self.ready = threading.Event()
         self.error = None
         self._jobs = queue.Queue()
         self._ctx = None
         self._music_page = None
+        self._music_ctx = None          # у Музыки свой браузер и свой профиль
+        self._pw = None                 # чтобы поднять второй контекст
+        self._launch_channel = None     # чем и с какими флагами поднялся первый
+        self._launch_args = None
 
     def close(self):
         self._stop_evt.set()
@@ -480,13 +504,31 @@ class TelemostBrowser(threading.Thread):
             raise value
         return value
 
+    def _launch_music_ctx(self):
+        """Второй браузер — только под Музыку, со своим профилем."""
+        kwargs = dict(
+            user_data_dir=_music_profile_dir(self._launch_channel),
+            headless=False,
+            args=self._launch_args or CHROMIUM_ARGS,
+            permissions=["microphone"],
+            no_viewport=True,
+            timeout=90000,
+        )
+        if self._launch_channel:
+            kwargs["channel"] = self._launch_channel
+        ctx = self._pw.chromium.launch_persistent_context(**kwargs)
+        ctx.add_init_script(SINK_SCRIPT)
+        return ctx
+
     def open_music(self, url):
         """Открыть страницу с музыкой и увести её звук в кабель."""
         def job(_page):
             p = self._music_page
             if p is None or p.is_closed():
-                p = self._ctx.new_page()
-                p.add_init_script(SINK_SCRIPT)
+                if self._music_ctx is None:
+                    self._music_ctx = self._launch_music_ctx()
+                mctx = self._music_ctx
+                p = mctx.pages[0] if mctx.pages else mctx.new_page()
                 self._music_page = p
             p.goto(url, wait_until="domcontentloaded", timeout=60000)
             try:
@@ -503,7 +545,8 @@ class TelemostBrowser(threading.Thread):
                 return p.evaluate("window.__ymSink || null")
             except Exception:
                 return None
-        return self.call(job, timeout=120)
+        # Первый ym поднимает второй браузер с нуля — это дольше обычного.
+        return self.call(job, timeout=200)
 
     def music_status(self):
         def job(_page):
@@ -515,11 +558,15 @@ class TelemostBrowser(threading.Thread):
 
     def close_music(self):
         def job(_page):
-            p = self._music_page
+            ctx = self._music_ctx
             self._music_page = None
-            if p is None or p.is_closed():
+            self._music_ctx = None
+            if ctx is None:
                 return False
-            p.close()
+            try:
+                ctx.close()          # закрываем весь второй браузер целиком
+            except Exception:
+                pass
             return True
         return self.call(job, timeout=30)
 
@@ -635,6 +682,9 @@ class TelemostBrowser(threading.Thread):
 
                 ctx.add_init_script(INIT_SCRIPT)
                 self._ctx = ctx
+                self._pw = p
+                self._launch_channel = channel
+                self._launch_args = args
                 page.route(f"{TELEMOST_ORIGIN}/**", self._route_telemost_web)
                 self._open_telemost(page)
                 self._try_join(page)
@@ -654,10 +704,14 @@ class TelemostBrowser(threading.Thread):
                 self.log(f"[браузер] {exc}")
                 self.ready.set()
             finally:
-                try:
-                    ctx.close()
-                except Exception:
-                    pass
+                for c in (self._music_ctx, ctx):
+                    try:
+                        if c is not None:
+                            c.close()
+                    except Exception:
+                        pass
+                self._music_ctx = None
+                self._music_page = None
                 self.log("[браузер] закрыт")
 
     # ---------- best-effort автоклик ----------
