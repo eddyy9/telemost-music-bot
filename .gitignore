@@ -30,3 +30,6 @@ PORTABLE_README.txt
 TelemostMusicBot.spec
 build_portable.bat
 requirements-build.txt
+
+# Локальные бэкапы репозитория (git bundle)
+_backup/
