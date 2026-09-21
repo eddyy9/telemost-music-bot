@@ -1,0 +1,19 @@
+# Единые окончания строк. Без этого файла редакторы и OneDrive переписывают
+# файлы целиком (CRLF<->LF), и каждый коммит выглядит как "изменено всё".
+* text=auto eol=lf
+
+# cmd.exe требует CRLF: с LF батник выполняется построчно неправильно.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Бинарники не трогать.
+*.png binary
+*.ico binary
+*.wav binary
+*.ogg binary
+*.mp3 binary
+*.zip binary
+*.exe binary
+*.dll binary
+*.bundle binary
